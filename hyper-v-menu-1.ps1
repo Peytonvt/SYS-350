@@ -4,54 +4,61 @@ function Show-Menu {
     )
 
     Clear-Host
-    Write-Host "================== $title =================="
+    Write-Host "==================$title=================="
     Write-Host "1: VM Quick Info"
-    Write-Host "2: VM Details"
+    Write-Host "2: VM 5 Details"
     Write-Host "3: Restore From Latest Snapshot"
     Write-Host "4: Create a Full Clone of a VM"
     Write-Host "5: Set VM Memory"
+    Write-Host "Q: Quit"
     Write-Host
-    Write-Host "q: Quit"
-    Write-Host "============================================"
+    Write-Host "==================$title=================="
+
 }
 
 function get-data {
-    Get-VM |
-        Select-Object Name, State,
-            @{Name="IP Address";Expression={(Get-VMNetworkAdapter -VMName $_.Name).IPAddresses}} |
-        Format-Table -AutoSize |
-        Out-Host
+    try {
+        Get-VM | Select-Object Name, State,
+            @{Name="IP Address";Expression={(Get-VMNetworkAdapter -VMName $_.Name).IPAddresses}} | Format-Table -AutoSize
+    }
+    catch {
+        Write-Host "Error retrieving VM data: $_" -ForegroundColor Red
+        Write-Host "Make sure you're running as Administrator and Hyper-V is installed." -ForegroundColor Yellow
+    }
 }
 
 function get-info {
     param (
         [string]$Name
     )
-
-    Get-VM -Name $Name -ErrorAction Stop |
-        Select-Object Name, ComputerName, Version, Uptime,
+    try {
+        Get-VM -Name $Name | Select-Object Name, ComputerName, Version, Uptime,
             @{Name="CPU Usage";Expression={(Get-VM -Name $_.Name).CPUUsage}},
-            @{Name="Assigned Memory (MB)";Expression={[math]::Round((Get-VM -Name $_.Name).MemoryAssigned / 1MB)}} |
-        Format-List |
-        Out-Host
+            @{Name="Assigned Memory";Expression={(Get-VM -Name $_.Name).MemoryAssigned}}
+    }
+    catch {
+        Write-Host "Error retrieving VM info: $_" -ForegroundColor Red
+    }
 }
 
 function restore-snapshot {
     param (
         [string]$Name
     )
-
-    $latestSnapshot = Get-VMSnapshot -VMName $Name |
-        Sort-Object CreationTime -Descending |
-        Select-Object -First 1
-
-    if (-not $latestSnapshot) {
-        Write-Host "No snapshots found for VM '$Name'" -ForegroundColor Yellow
-        return
+    try {
+        $latest_snapshot = Get-VMSnapshot -VMName $Name |
+        Sort-Object CreationTime -Descending | Select-Object -First 1
+        
+        if ($latest_snapshot) {
+            Restore-VMSnapshot -Name $latest_snapshot.Name -VMName $Name -Confirm:$false
+            Write-Host "Restored to snapshot: $($latest_snapshot.Name)" -ForegroundColor Green
+        } else {
+            Write-Host "No snapshots found for VM: $Name" -ForegroundColor Yellow
+        }
     }
-
-    Restore-VMSnapshot -VMName $Name -Name $latestSnapshot.Name -Confirm:$false
-    Write-Host "Restored snapshot '$($latestSnapshot.Name)' for VM '$Name'" -ForegroundColor Green
+    catch {
+        Write-Host "Error restoring snapshot: $_" -ForegroundColor Red
+    }
 }
 
 function clone-vm {
@@ -59,78 +66,109 @@ function clone-vm {
         [string]$Name,
         [string]$CloneVMName
     )
+    try {
+        $ExportFolder = "C:\Exports"
+        $CloneFolder = "C:\Clone VM Storage"
 
-    $ExportFolder = "C:\Exports\$Name"
-    $CloneFolder  = "C:\Clone VM Storage"
+        If (Test-Path $CloneFolder) {
+            Write-Warning "Clone Folder: $CloneFolder already exists. Aborting Script ..."
+            return
+        }
+        # Export the Source VM
+        Export-VM $Name -Path $ExportFolder
 
-    if (Test-Path $ExportFolder) {
-        Remove-Item $ExportFolder -Recurse -Force
+        # Import Exported VM
+        Get-ChildItem -Path $ExportFolder -File -Name
+        Import-VM -Path $ExportFolder -Copy -GenerateNewId |
+            Rename-VM -NewName $CloneVMName
+        
+        Write-Host "VM cloned successfully!" -ForegroundColor Green
     }
-
-    Write-Host "Exporting VM '$Name'..."
-    Export-VM -Name $Name -Path $ExportFolder
-
-    Write-Host "Importing VM as '$CloneVMName'..."
-    Import-VM -Path $ExportFolder -Copy -GenerateNewId |
-        Rename-VM -NewName $CloneVMName
-
-    Write-Host "Clone '$CloneVMName' created successfully" -ForegroundColor Green
+    catch {
+        Write-Host "Error cloning VM: $_" -ForegroundColor Red
+    }
 }
 
 function set-memory {
     param (
         [string]$Name
     )
-
-    $memoryMB = Read-Host "Enter startup memory in MB"
-
-    Stop-VM -Name $Name -Force
-    Set-VM -Name $Name -MemoryStartupBytes (${memoryMB}MB)
-    Start-VM -Name $Name
-
-    Write-Host "Memory updated for VM '$Name'" -ForegroundColor Green
+    try {
+        $memoryGB = Read-Host "Enter memory size in GB"
+        $memoryBytes = [int64]$memoryGB * 1GB
+        
+        Set-VMMemory -VMName $Name -StartupBytes $memoryBytes
+        Write-Host "Memory set to $memoryGB GB for VM: $Name" -ForegroundColor Green
+    }
+    catch {
+        Write-Host "Error setting memory: $_" -ForegroundColor Red
+    }
 }
 
 function main {
-    while ($true) {
+    # Check if running as Administrator
+    $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+    $isAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    
+    if (-not $isAdmin) {
+        Write-Host "WARNING: Not running as Administrator. Hyper-V commands may fail." -ForegroundColor Yellow
+        Write-Host "Press any key to continue anyway..."
+        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+    }
+
+    while($true) {
         Show-Menu
         $choice = Read-Host "Please select an option"
-
+        
         switch ($choice) {
             '1' {
-                Write-Host "`nVM Quick Info:`n"
+                Write-Host "Display VM Information" -ForegroundColor Cyan
                 get-data
             }
             '2' {
-                $vmName = Read-Host "Enter a VM Name"
+                Write-Host "Display VM Summary ..." -ForegroundColor Cyan
+                $vmName = Read-Host "Please Enter a VM Name"
                 get-info -Name $vmName
             }
             '3' {
-                $vmName = Read-Host "Enter a VM Name"
+                Write-Host "Restore To Latest Snapshot ..." -ForegroundColor Cyan
+                $vmName = Read-Host "Please Enter a VM Name"
                 restore-snapshot -Name $vmName
             }
             '4' {
-                $vmName = Read-Host "Enter source VM Name"
-                $cloneName = Read-Host "Enter clone VM Name"
-                clone-vm -Name $vmName -CloneVMName $cloneName
+                Write-Host "Creating Full Clone ..." -ForegroundColor Cyan
+                $vmName = Read-Host "Enter a VM Name"
+                $CloneVMName = Read-Host "Enter a VM Name for the Clone"
+                clone-vm -Name $vmName -CloneVMName $CloneVMName
             }
             '5' {
+                Write-Host "Change RAM Count" -ForegroundColor Cyan
                 $vmName = Read-Host "Enter a VM Name"
                 set-memory -Name $vmName
             }
             'q' {
-                Write-Host "Exiting..."
+                Write-Host "Exiting ..." -ForegroundColor Green
                 return
             }
             default {
-                Write-Host "Invalid option, try again." -ForegroundColor Red
+                Write-Host "Invalid option, please try again." -ForegroundColor Red
             }
         }
-
-        Write-Host
-        Write-Host "Press any key to continue..."
-        $host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") | Out-Null
+        
+        Write-Host "`nPress any key to continue ..."
+        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
     }
 }
 
-main
+# Run the main function with error handling
+try {
+    main
+}
+catch {
+    Write-Host "Fatal error occurred: $_" -ForegroundColor Red
+}
+finally {
+    # Ensure the window doesn't close immediately
+    Write-Host "`nScript completed. Press any key to exit..."
+    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+}
