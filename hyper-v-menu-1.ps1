@@ -105,57 +105,60 @@ function clone-vm {
         [string]$Name,
         [string]$CloneVMName
     )
+
     try {
         Write-Host "`nStarting clone process..." -ForegroundColor Green
-        
-        # Define paths
-        $ExportFolder = "C:\Exports\$Name"
-        $ImportFolder = "C:\ClonedVMs\$CloneVMName"
-        
-        # Check if VM exists
+
+        # Paths
+        $ExportRoot = "C:\Exports"
+        $ExportFolder = Join-Path $ExportRoot $Name
+        $CloneRoot = "C:\ClonedVMs"
+        $ClonePath = Join-Path $CloneRoot $CloneVMName
+
+        # Get source VM
         $sourceVM = Get-VM -Name $Name -ErrorAction Stop
         Write-Host "Source VM found: $Name (State: $($sourceVM.State))" -ForegroundColor Cyan
-        
-        # Create export folder if it doesn't exist
-        if (-not (Test-Path $ExportFolder)) {
-            New-Item -ItemType Directory -Path $ExportFolder -Force | Out-Null
-            Write-Host "Created export folder: $ExportFolder" -ForegroundColor Cyan
+
+        # Stop VM if running
+        if ($sourceVM.State -eq 'Running') {
+            Write-Host "Stopping source VM for clean export..." -ForegroundColor Yellow
+            Stop-VM -Name $Name -Force
+            $sourceVM | Wait-VM -For Stopped
         }
-        
-        # Export the VM
-        Write-Host "Exporting VM (this may take a while)..." -ForegroundColor Cyan
-        Export-VM -Name $Name -Path $ExportFolder
-        Write-Host "Export completed!" -ForegroundColor Green
-        
-        # Find the exported VM configuration file
-        $vmcxPath = Get-ChildItem -Path $ExportFolder -Recurse -Filter "*.vmcx" | Select-Object -First 1
-        
-        if (-not $vmcxPath) {
-            throw "Could not find exported VM configuration file (.vmcx)"
-        }
-        
-        Write-Host "Found VM config at: $($vmcxPath.FullName)" -ForegroundColor Cyan
-        
-        # Import and rename the VM
-        Write-Host "Importing VM as clone..." -ForegroundColor Cyan
-        $importedVM = Import-VM -Path $vmcxPath.FullName -Copy -GenerateNewId -VhdDestinationPath $ImportFolder -VirtualMachinePath $ImportFolder
-        
-        # Rename the imported VM
+
+        # Create folders
+        New-Item -ItemType Directory -Path $ExportFolder -Force | Out-Null
+        New-Item -ItemType Directory -Path $ClonePath -Force | Out-Null
+
+        # Export VM
+        Write-Host "Exporting VM..." -ForegroundColor Cyan
+        Export-VM -Name $Name -Path $ExportRoot -ErrorAction Stop
+        Write-Host "Export completed." -ForegroundColor Green
+
+        # Import VM as a full clone
+        Write-Host "Importing VM as full clone..." -ForegroundColor Cyan
+        $importedVM = Import-VM `
+            -Path $ExportFolder `
+            -Copy `
+            -GenerateNewId `
+            -VirtualMachinePath $ClonePath `
+            -VhdDestinationPath $ClonePath `
+            -ErrorAction Stop
+
+        # Rename clone
         Rename-VM -VM $importedVM -NewName $CloneVMName
-        
+
         Write-Host "`nVM cloned successfully!" -ForegroundColor Green
         Write-Host "Clone Name: $CloneVMName" -ForegroundColor Green
-        Write-Host "Location: $ImportFolder" -ForegroundColor Cyan
-        
-        # Show the new VM
-        Get-VM -Name $CloneVMName | Format-Table Name, State, Path -AutoSize | Out-Host
+        Write-Host "Clone Location: $ClonePath" -ForegroundColor Cyan
+
+        # Show clone info
+        Get-VM -Name $CloneVMName |
+            Format-Table Name, State, Path -AutoSize | Out-Host
     }
     catch {
-        Write-Host "`nError cloning VM: $_" -ForegroundColor Red
-        Write-Host "Make sure:" -ForegroundColor Yellow
-        Write-Host "  - The source VM exists" -ForegroundColor Yellow
-        Write-Host "  - You have enough disk space" -ForegroundColor Yellow
-        Write-Host "  - You're running as Administrator" -ForegroundColor Yellow
+        Write-Host "`nError cloning VM:" -ForegroundColor Red
+        Write-Host $_ -ForegroundColor Red
     }
 }
 
@@ -275,3 +278,4 @@ finally {
     Write-Host "`nScript completed. Press Enter to exit..."
     $null = Read-Host
 }
+
