@@ -10,6 +10,9 @@ function Show-Menu {
     Write-Host "3: Restore From Latest Snapshot"
     Write-Host "4: Create a Full Clone of a VM"
     Write-Host "5: Set VM Memory"
+    Write-Host "6: Delete a VM from Disk"
+    Write-Host "7: Copy a File to a VM"
+    Write-Host "8: Execute a Command on a VM"
     Write-Host "Q: Quit"
     Write-Host
     Write-Host "==================$title=================="
@@ -312,6 +315,200 @@ function set-memory {
     }
 }
 
+function delete-vm {
+    param (
+        [string]$Name
+    )
+    try {
+        Write-Host "`n=== Delete VM from Disk ===" -ForegroundColor Yellow
+        
+        # Get VM details
+        $vm = Get-VM -Name $Name -ErrorAction Stop
+        Write-Host "`nVM Found: $Name" -ForegroundColor Cyan
+        Write-Host "  State: $($vm.State)" -ForegroundColor Cyan
+        Write-Host "  Path: $($vm.Path)" -ForegroundColor Cyan
+        
+        # Get VHD information
+        $vhds = Get-VMHardDiskDrive -VMName $Name
+        if ($vhds) {
+            Write-Host "`nVirtual Hard Disks:" -ForegroundColor Cyan
+            foreach ($vhd in $vhds) {
+                Write-Host "  - $($vhd.Path)" -ForegroundColor Cyan
+            }
+        }
+        
+        # Confirmation
+        Write-Host "`nWARNING: This will permanently delete the VM and all its files!" -ForegroundColor Red
+        $confirm = Read-Host "Are you absolutely sure you want to delete '$Name'? (Type 'DELETE' to confirm)"
+        
+        if ($confirm -ne 'DELETE') {
+            Write-Host "Deletion cancelled." -ForegroundColor Yellow
+            return
+        }
+        
+        # Stop VM if running
+        if ($vm.State -ne 'Off') {
+            Write-Host "`nStopping VM..." -ForegroundColor Cyan
+            Stop-VM -Name $Name -Force -TurnOff
+            Start-Sleep -Seconds 2
+        }
+        
+        # Get paths before deletion
+        $vmPath = $vm.Path
+        $configPath = $vm.ConfigurationLocation
+        $vhdPaths = @()
+        foreach ($vhd in $vhds) {
+            $vhdPaths += $vhd.Path
+        }
+        
+        # Remove VM
+        Write-Host "Removing VM configuration..." -ForegroundColor Cyan
+        Remove-VM -Name $Name -Force
+        Write-Host "VM removed from Hyper-V." -ForegroundColor Green
+        
+        # Delete VHD files
+        Write-Host "`nDeleting VHD files..." -ForegroundColor Cyan
+        foreach ($vhdPath in $vhdPaths) {
+            if (Test-Path $vhdPath) {
+                Remove-Item -Path $vhdPath -Force
+                Write-Host "  Deleted: $vhdPath" -ForegroundColor Green
+            }
+        }
+        
+        # Delete VM folder
+        Write-Host "`nDeleting VM folder..." -ForegroundColor Cyan
+        $vmFolder = Join-Path $configPath $Name
+        if (Test-Path $vmFolder) {
+            Remove-Item -Path $vmFolder -Recurse -Force
+            Write-Host "  Deleted: $vmFolder" -ForegroundColor Green
+        }
+        
+        Write-Host "`n=== VM Successfully Deleted ===" -ForegroundColor Green
+        
+    }
+    catch {
+        Write-Host "`nError deleting VM: $_" -ForegroundColor Red
+        Write-Host "Make sure the VM exists and you have proper permissions." -ForegroundColor Yellow
+    }
+}
+
+function copy-file-to-vm {
+    param (
+        [string]$Name
+    )
+    try {
+        Write-Host "`n=== Copy File to VM ===" -ForegroundColor Cyan
+        
+        # Get VM and check state
+        $vm = Get-VM -Name $Name -ErrorAction Stop
+        Write-Host "VM: $Name" -ForegroundColor Cyan
+        Write-Host "State: $($vm.State)" -ForegroundColor Cyan
+        
+        if ($vm.State -ne 'Running') {
+            Write-Host "`nError: VM must be running to copy files." -ForegroundColor Red
+            Write-Host "Please start the VM first." -ForegroundColor Yellow
+            return
+        }
+        
+        # Get credentials
+        Write-Host "`nEnter credentials for the VM:" -ForegroundColor Cyan
+        $username = Read-Host "Username (e.g., Administrator or DOMAIN\User)"
+        $password = Read-Host "Password" -AsSecureString
+        $cred = New-Object System.Management.Automation.PSCredential($username, $password)
+        
+        # Get source file
+        Write-Host "`nSource file path (on this host):" -ForegroundColor Cyan
+        $sourcePath = Read-Host "Enter full path"
+        
+        if (-not (Test-Path $sourcePath)) {
+            Write-Host "Error: Source file not found: $sourcePath" -ForegroundColor Red
+            return
+        }
+        
+        # Get destination path
+        Write-Host "`nDestination path on VM (e.g., C:\Temp\file.txt):" -ForegroundColor Cyan
+        $destPath = Read-Host "Enter full path"
+        
+        # Copy file using PowerShell Direct
+        Write-Host "`nCopying file to VM..." -ForegroundColor Cyan
+        Copy-VMFile -Name $Name -SourcePath $sourcePath -DestinationPath $destPath `
+            -FileSource Host -CreateFullPath -Force
+        
+        Write-Host "`n=== File Copied Successfully ===" -ForegroundColor Green
+        Write-Host "Source: $sourcePath" -ForegroundColor Cyan
+        Write-Host "Destination: $destPath" -ForegroundColor Cyan
+        
+    }
+    catch {
+        Write-Host "`nError copying file: $_" -ForegroundColor Red
+        Write-Host "`nTroubleshooting tips:" -ForegroundColor Yellow
+        Write-Host "  - Ensure the VM is running" -ForegroundColor Yellow
+        Write-Host "  - Verify integration services are enabled" -ForegroundColor Yellow
+        Write-Host "  - Check that credentials are correct" -ForegroundColor Yellow
+        Write-Host "  - Ensure Guest Service Interface is enabled" -ForegroundColor Yellow
+    }
+}
+
+function execute-command-on-vm {
+    param (
+        [string]$Name
+    )
+    try {
+        Write-Host "`n=== Execute Command on VM ===" -ForegroundColor Cyan
+        
+        # Get VM and check state
+        $vm = Get-VM -Name $Name -ErrorAction Stop
+        Write-Host "VM: $Name" -ForegroundColor Cyan
+        Write-Host "State: $($vm.State)" -ForegroundColor Cyan
+        
+        if ($vm.State -ne 'Running') {
+            Write-Host "`nError: VM must be running to execute commands." -ForegroundColor Red
+            Write-Host "Please start the VM first." -ForegroundColor Yellow
+            return
+        }
+        
+        # Get credentials
+        Write-Host "`nEnter credentials for the VM:" -ForegroundColor Cyan
+        $username = Read-Host "Username (e.g., Administrator or DOMAIN\User)"
+        $password = Read-Host "Password" -AsSecureString
+        $cred = New-Object System.Management.Automation.PSCredential($username, $password)
+        
+        # Get command to execute
+        Write-Host "`nEnter the PowerShell command to execute:" -ForegroundColor Cyan
+        $command = Read-Host "Command"
+        
+        if ([string]::IsNullOrWhiteSpace($command)) {
+            Write-Host "Error: No command provided." -ForegroundColor Red
+            return
+        }
+        
+        # Execute command using PowerShell Direct
+        Write-Host "`nExecuting command on VM..." -ForegroundColor Cyan
+        Write-Host "Command: $command" -ForegroundColor Yellow
+        Write-Host "`n--- Output ---" -ForegroundColor Green
+        
+        $result = Invoke-Command -VMName $Name -Credential $cred -ScriptBlock {
+            param($cmd)
+            Invoke-Expression $cmd
+        } -ArgumentList $command
+        
+        $result | Out-Host
+        
+        Write-Host "`n--- End Output ---" -ForegroundColor Green
+        Write-Host "`n=== Command Executed Successfully ===" -ForegroundColor Green
+        
+    }
+    catch {
+        Write-Host "`nError executing command: $_" -ForegroundColor Red
+        Write-Host "`nTroubleshooting tips:" -ForegroundColor Yellow
+        Write-Host "  - Ensure the VM is running" -ForegroundColor Yellow
+        Write-Host "  - Verify PowerShell Direct is enabled" -ForegroundColor Yellow
+        Write-Host "  - Check that credentials are correct" -ForegroundColor Yellow
+        Write-Host "  - Ensure the VM is Windows-based with PowerShell" -ForegroundColor Yellow
+        Write-Host "  - Verify integration services are running" -ForegroundColor Yellow
+    }
+}
+
 function Pause-Script {
     Write-Host "`nPress Enter to continue..." -ForegroundColor Yellow
     $null = Read-Host
@@ -361,6 +558,21 @@ function main {
                 Write-Host "`n=== Change VM Memory ===" -ForegroundColor Cyan
                 $vmName = Read-Host "Enter a VM Name"
                 set-memory -Name $vmName
+            }
+            '6' {
+                Write-Host "`n=== Delete VM from Disk ===" -ForegroundColor Cyan
+                $vmName = Read-Host "Enter VM Name to Delete"
+                delete-vm -Name $vmName
+            }
+            '7' {
+                Write-Host "`n=== Copy File to VM ===" -ForegroundColor Cyan
+                $vmName = Read-Host "Enter VM Name"
+                copy-file-to-vm -Name $vmName
+            }
+            '8' {
+                Write-Host "`n=== Execute Command on VM ===" -ForegroundColor Cyan
+                $vmName = Read-Host "Enter VM Name"
+                execute-command-on-vm -Name $vmName
             }
             'q' {
                 Write-Host "`nExiting ..." -ForegroundColor Green
