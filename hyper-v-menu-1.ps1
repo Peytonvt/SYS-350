@@ -101,65 +101,7 @@ function restore-snapshot {
 }
 
 function clone-vm {
-    param (
-        [string]$Name,
-        [string]$CloneVMName
-    )
-
-    try {
-        Write-Host "`nStarting clone process..." -ForegroundColor Green
-
-        # Paths
-        $ExportRoot = "C:\Exports"
-        $ExportFolder = Join-Path $ExportRoot $Name
-        $CloneRoot = "C:\ClonedVMs"
-        $ClonePath = Join-Path $CloneRoot $CloneVMName
-
-        # Get source VM
-        $sourceVM = Get-VM -Name $Name -ErrorAction Stop
-        Write-Host "Source VM found: $Name (State: $($sourceVM.State))" -ForegroundColor Cyan
-
-        # Stop VM if running
-        if ($sourceVM.State -eq 'Running') {
-            Write-Host "Stopping source VM for clean export..." -ForegroundColor Yellow
-            Stop-VM -Name $Name -Force
-            $sourceVM | Wait-VM -For Stopped
-        }
-
-        # Create folders
-        New-Item -ItemType Directory -Path $ExportFolder -Force | Out-Null
-        New-Item -ItemType Directory -Path $ClonePath -Force | Out-Null
-
-        # Export VM
-        Write-Host "Exporting VM..." -ForegroundColor Cyan
-        Export-VM -Name $Name -Path $ExportRoot -ErrorAction Stop
-        Write-Host "Export completed." -ForegroundColor Green
-
-        # Import VM as a full clone
-        Write-Host "Importing VM as full clone..." -ForegroundColor Cyan
-        $importedVM = Import-VM `
-            -Path $ExportFolder `
-            -Copy `
-            -GenerateNewId `
-            -VirtualMachinePath $ClonePath `
-            -VhdDestinationPath $ClonePath `
-            -ErrorAction Stop
-
-        # Rename clone
-        Rename-VM -VM $importedVM -NewName $CloneVMName
-
-        Write-Host "`nVM cloned successfully!" -ForegroundColor Green
-        Write-Host "Clone Name: $CloneVMName" -ForegroundColor Green
-        Write-Host "Clone Location: $ClonePath" -ForegroundColor Cyan
-
-        # Show clone info
-        Get-VM -Name $CloneVMName |
-            Format-Table Name, State, Path -AutoSize | Out-Host
-    }
-    catch {
-        Write-Host "`nError cloning VM:" -ForegroundColor Red
-        Write-Host $_ -ForegroundColor Red
-    }
+   
 }
 
 function set-memory {
@@ -278,4 +220,5 @@ finally {
     Write-Host "`nScript completed. Press Enter to exit..."
     $null = Read-Host
 }
+
 
