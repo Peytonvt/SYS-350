@@ -101,7 +101,175 @@ function restore-snapshot {
 }
 
 function clone-vm {
-   
+    param(
+        [string]$Name,
+        [string]$CloneVMName
+    )
+    
+    <#
+    .SYNOPSIS
+        Creates a new VM clone using differencing disks
+    .DESCRIPTION
+        Creates a new VM using differencing disks for efficient cloning.
+        Can accept parameters from menu or prompt for input interactively.
+    #>
+    
+    try {
+        Write-Host "`n=== VM Cloning Wizard ===" -ForegroundColor Green
+        
+        # Step 1: Get source VM name (use parameter if provided, otherwise prompt)
+        if (-not $Name) {
+            Write-Host "`nAvailable VMs:" -ForegroundColor Cyan
+            Get-VM | Format-Table Name, State, Path -AutoSize | Out-Host
+            $sourceName = Read-Host "`nEnter the source VM name to clone"
+        } else {
+            $sourceName = $Name
+        }
+        
+        # Step 2: Verify source VM exists
+        $sourceVM = Get-VM -Name $sourceName -ErrorAction Stop
+        Write-Host "`nSource VM found: $sourceName" -ForegroundColor Green
+        Write-Host "  State: $($sourceVM.State)" -ForegroundColor Cyan
+        Write-Host "  Memory: $([math]::Round($sourceVM.MemoryStartup / 1GB, 2)) GB" -ForegroundColor Cyan
+        Write-Host "  Processors: $($sourceVM.ProcessorCount)" -ForegroundColor Cyan
+        
+        # Step 3: Shutdown VM if running
+        if ($sourceVM.State -eq 'Running') {
+            Write-Host "`nWarning: Source VM is currently running." -ForegroundColor Yellow
+            Write-Host "The VM must be shut down to create a safe clone." -ForegroundColor Yellow
+            $shutdownConfirm = Read-Host "Shut down the VM now? (Y/N)"
+            
+            if ($shutdownConfirm -eq 'Y' -or $shutdownConfirm -eq 'y') {
+                Write-Host "Shutting down VM..." -ForegroundColor Cyan
+                Stop-VM -Name $sourceName -Force
+                
+                # Wait for VM to fully stop
+                $timeout = 30
+                $elapsed = 0
+                while ((Get-VM -Name $sourceName).State -ne 'Off' -and $elapsed -lt $timeout) {
+                    Start-Sleep -Seconds 1
+                    $elapsed++
+                    Write-Host "." -NoNewline
+                }
+                Write-Host ""
+                
+                if ((Get-VM -Name $sourceName).State -eq 'Off') {
+                    Write-Host "VM successfully shut down." -ForegroundColor Green
+                } else {
+                    Write-Host "Warning: VM did not shut down within timeout." -ForegroundColor Yellow
+                }
+            } else {
+                Write-Host "Clone cancelled. VM must be shut down first." -ForegroundColor Yellow
+                return
+            }
+        }
+        
+        # Step 4: Get clone name (use parameter if provided, otherwise prompt)
+        if (-not $CloneVMName) {
+            $cloneName = Read-Host "`nEnter the name for the new cloned VM"
+        } else {
+            $cloneName = $CloneVMName
+        }
+        
+        # Check if clone name already exists
+        $existingVM = Get-VM -Name $cloneName -ErrorAction SilentlyContinue
+        if ($existingVM) {
+            Write-Host "Error: A VM with the name '$cloneName' already exists!" -ForegroundColor Red
+            return
+        }
+        
+        Write-Host "`n=== Starting Clone Process ===" -ForegroundColor Green
+        
+        # Step 5: Get source VM's VHD
+        $sourceVHDs = Get-VMHardDiskDrive -VMName $sourceName
+        if (-not $sourceVHDs -or $sourceVHDs.Count -eq 0) {
+            throw "No virtual hard disks found for source VM"
+        }
+        
+        $sourceVHD = $sourceVHDs[0].Path
+        Write-Host "Source VHD: $sourceVHD" -ForegroundColor Cyan
+        
+        # Step 6: Set up paths for clone
+        $vhdFolder = Split-Path $sourceVHD -Parent
+        $cloneVHDPath = Join-Path $vhdFolder "$cloneName.vhdx"
+        
+        # Check if VHD already exists
+        if (Test-Path $cloneVHDPath) {
+            Write-Host "Error: VHD file already exists at: $cloneVHDPath" -ForegroundColor Red
+            return
+        }
+        
+        # Step 7: Make parent VHD read-only for safety
+        Write-Host "Setting source VHD to read-only..." -ForegroundColor Cyan
+        $parentVHD = Get-Item $sourceVHD
+        if (-not ($parentVHD.Attributes -band [System.IO.FileAttributes]::ReadOnly)) {
+            $parentVHD.Attributes = $parentVHD.Attributes -bor [System.IO.FileAttributes]::ReadOnly
+            Write-Host "Source VHD set to read-only for safety." -ForegroundColor Green
+        }
+        
+        # Step 8: Create differencing disk
+        Write-Host "Creating differencing disk..." -ForegroundColor Cyan
+        New-VHD -Path $cloneVHDPath -ParentPath $sourceVHD -Differencing | Out-Null
+        Write-Host "Differencing disk created: $cloneVHDPath" -ForegroundColor Green
+        
+        # Step 9: Get source VM settings
+        $sourceSwitch = (Get-VMNetworkAdapter -VMName $sourceName)[0].SwitchName
+        $sourceGeneration = $sourceVM.Generation
+        $vmPath = Split-Path (Split-Path $sourceVM.Path -Parent) -Parent
+        
+        # Step 10: Create new VM with same settings as source
+        Write-Host "Creating new VM with source settings..." -ForegroundColor Cyan
+        
+        $newVM = New-VM -Name $cloneName `
+            -MemoryStartupBytes $sourceVM.MemoryStartup `
+            -BootDevice VHD `
+            -VHDPath $cloneVHDPath `
+            -Path $vmPath `
+            -Generation $sourceGeneration
+        
+        # Set processor count
+        Set-VMProcessor -VMName $cloneName -Count $sourceVM.ProcessorCount
+        
+        # Connect to network switch if source had one
+        if ($sourceSwitch) {
+            Get-VMNetworkAdapter -VMName $cloneName | Connect-VMNetworkAdapter -SwitchName $sourceSwitch
+            Write-Host "Connected to network switch: $sourceSwitch" -ForegroundColor Cyan
+        }
+        
+        # Copy firmware settings if Generation 2
+        if ($sourceGeneration -eq 2) {
+            $sourceFirmware = Get-VMFirmware -VMName $sourceName
+            Set-VMFirmware -VMName $cloneName -EnableSecureBoot $sourceFirmware.SecureBoot
+            Write-Host "Firmware settings copied." -ForegroundColor Cyan
+        }
+        
+        # Step 11: Success!
+        Write-Host "`n=== Clone Created Successfully! ===" -ForegroundColor Green
+        Write-Host "Clone Name: $cloneName" -ForegroundColor Green
+        Write-Host "VHD Location: $cloneVHDPath" -ForegroundColor Cyan
+        Write-Host "Type: Differencing Disk (space-efficient)" -ForegroundColor Cyan
+        
+        # Display the new VM details
+        Write-Host "`nNew VM Details:" -ForegroundColor Cyan
+        Get-VM -Name $cloneName | Format-Table Name, State, MemoryStartup, ProcessorCount, Generation -AutoSize | Out-Host
+        
+        # Ask if user wants to start the clone
+        $startConfirm = Read-Host "`nWould you like to start the cloned VM now? (Y/N)"
+        if ($startConfirm -eq 'Y' -or $startConfirm -eq 'y') {
+            Start-VM -Name $cloneName
+            Write-Host "VM '$cloneName' has been started." -ForegroundColor Green
+        }
+        
+    }
+    catch {
+        Write-Host "`nError during cloning process: $_" -ForegroundColor Red
+        Write-Host "`nTroubleshooting tips:" -ForegroundColor Yellow
+        Write-Host "  - Ensure the source VM exists and is accessible" -ForegroundColor Yellow
+        Write-Host "  - Verify you have enough disk space" -ForegroundColor Yellow
+        Write-Host "  - Make sure you're running as Administrator" -ForegroundColor Yellow
+        Write-Host "  - Check that the VM name doesn't already exist" -ForegroundColor Yellow
+        Write-Host "  - Ensure the source VM is shut down" -ForegroundColor Yellow
+    }
 }
 
 function set-memory {
@@ -220,5 +388,3 @@ finally {
     Write-Host "`nScript completed. Press Enter to exit..."
     $null = Read-Host
 }
-
-
