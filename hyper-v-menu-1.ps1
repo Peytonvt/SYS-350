@@ -105,6 +105,11 @@ function set-memory {
     }
 }
 
+function Pause-Script {
+    Write-Host "`nPress Enter to continue..." -ForegroundColor Yellow
+    $null = Read-Host
+}
+
 function main {
     # Check if running as Administrator
     $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
@@ -112,8 +117,7 @@ function main {
     
     if (-not $isAdmin) {
         Write-Host "WARNING: Not running as Administrator. Hyper-V commands may fail." -ForegroundColor Yellow
-        Write-Host "Press any key to continue anyway..."
-        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+        Pause-Script
     }
 
     while($true) {
@@ -155,8 +159,7 @@ function main {
             }
         }
         
-        Write-Host "`nPress any key to continue ..."
-        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+        Pause-Script
     }
 }
 
@@ -169,6 +172,6 @@ catch {
 }
 finally {
     # Ensure the window doesn't close immediately
-    Write-Host "`nScript completed. Press any key to exit..."
-    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+    Write-Host "`nScript completed. Press Enter to exit..."
+    $null = Read-Host
 }
