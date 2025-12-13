@@ -109,14 +109,6 @@ function clone-vm {
         [string]$CloneVMName
     )
     
-    <#
-    .SYNOPSIS
-        Creates a new VM clone using differencing disks
-    .DESCRIPTION
-        Creates a new VM using differencing disks for efficient cloning.
-        Can accept parameters from menu or prompt for input interactively.
-    #>
-    
     try {
         Write-Host "`n=== VM Cloning Wizard ===" -ForegroundColor Green
         
@@ -600,3 +592,4 @@ finally {
     Write-Host "`nScript completed. Press Enter to exit..."
     $null = Read-Host
 }
+
