@@ -108,54 +108,105 @@ function clone-vm {
     try {
         Write-Host "`nStarting clone process..." -ForegroundColor Green
         
-        # Define paths
-        $ExportFolder = "C:\Exports\$Name"
-        $ImportFolder = "C:\ClonedVMs\$CloneVMName"
-        
         # Check if VM exists
         $sourceVM = Get-VM -Name $Name -ErrorAction Stop
         Write-Host "Source VM found: $Name (State: $($sourceVM.State))" -ForegroundColor Cyan
         
-        # Create export folder if it doesn't exist
-        if (-not (Test-Path $ExportFolder)) {
-            New-Item -ItemType Directory -Path $ExportFolder -Force | Out-Null
-            Write-Host "Created export folder: $ExportFolder" -ForegroundColor Cyan
+        # Check if clone name already exists
+        $existingClone = Get-VM -Name $CloneVMName -ErrorAction SilentlyContinue
+        if ($existingClone) {
+            Write-Host "Error: A VM with name '$CloneVMName' already exists!" -ForegroundColor Red
+            return
+        }
+        
+        # Define paths - use unique timestamp to avoid conflicts
+        $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+        $ExportFolder = "C:\VMExports\$Name`_$timestamp"
+        $ImportFolder = "C:\VMClones\$CloneVMName"
+        
+        # Clean up and create export folder
+        if (Test-Path $ExportFolder) {
+            Write-Host "Removing old export folder..." -ForegroundColor Yellow
+            Remove-Item -Path $ExportFolder -Recurse -Force
+        }
+        
+        Write-Host "Creating export folder: $ExportFolder" -ForegroundColor Cyan
+        New-Item -ItemType Directory -Path $ExportFolder -Force | Out-Null
+        
+        # Save the original state
+        $wasRunning = $sourceVM.State -eq 'Running'
+        
+        # Stop VM if running (required for clean export)
+        if ($wasRunning) {
+            Write-Host "VM is running. Saving state before export..." -ForegroundColor Yellow
+            Save-VM -Name $Name
+            Start-Sleep -Seconds 2
         }
         
         # Export the VM
-        Write-Host "Exporting VM (this may take a while)..." -ForegroundColor Cyan
+        Write-Host "Exporting VM (this may take several minutes)..." -ForegroundColor Cyan
         Export-VM -Name $Name -Path $ExportFolder
         Write-Host "Export completed!" -ForegroundColor Green
         
-        # Find the exported VM configuration file
-        $vmcxPath = Get-ChildItem -Path $ExportFolder -Recurse -Filter "*.vmcx" | Select-Object -First 1
+        # Restart the original VM if it was running
+        if ($wasRunning) {
+            Write-Host "Restarting original VM..." -ForegroundColor Cyan
+            Start-VM -Name $Name
+        }
         
-        if (-not $vmcxPath) {
+        # Find the exported VM configuration file
+        Write-Host "Locating VM configuration file..." -ForegroundColor Cyan
+        $vmcxFiles = Get-ChildItem -Path $ExportFolder -Recurse -Filter "*.vmcx"
+        
+        if ($vmcxFiles.Count -eq 0) {
             throw "Could not find exported VM configuration file (.vmcx)"
         }
         
-        Write-Host "Found VM config at: $($vmcxPath.FullName)" -ForegroundColor Cyan
+        # Use the first .vmcx file found
+        $vmcxPath = $vmcxFiles[0].FullName
+        Write-Host "Found VM config at: $vmcxPath" -ForegroundColor Cyan
+        
+        # Create import folder
+        Write-Host "Creating import folder: $ImportFolder" -ForegroundColor Cyan
+        New-Item -ItemType Directory -Path $ImportFolder -Force | Out-Null
         
         # Import and rename the VM
-        Write-Host "Importing VM as clone..." -ForegroundColor Cyan
-        $importedVM = Import-VM -Path $vmcxPath.FullName -Copy -GenerateNewId -VhdDestinationPath $ImportFolder -VirtualMachinePath $ImportFolder
+        Write-Host "Importing VM as clone (this may take several minutes)..." -ForegroundColor Cyan
+        $importedVM = Import-VM -Path $vmcxPath -Copy -GenerateNewId -VhdDestinationPath "$ImportFolder\Virtual Hard Disks" -VirtualMachinePath $ImportFolder
         
         # Rename the imported VM
         Rename-VM -VM $importedVM -NewName $CloneVMName
         
-        Write-Host "`nVM cloned successfully!" -ForegroundColor Green
-        Write-Host "Clone Name: $CloneVMName" -ForegroundColor Green
+        Write-Host "`n========================================" -ForegroundColor Green
+        Write-Host "VM CLONED SUCCESSFULLY!" -ForegroundColor Green
+        Write-Host "========================================" -ForegroundColor Green
+        Write-Host "Clone Name: $CloneVMName" -ForegroundColor Cyan
         Write-Host "Location: $ImportFolder" -ForegroundColor Cyan
         
         # Show the new VM
         Get-VM -Name $CloneVMName | Format-Table Name, State, Path -AutoSize | Out-Host
+        
+        # Clean up export folder
+        Write-Host "`nCleaning up export files..." -ForegroundColor Yellow
+        Remove-Item -Path $ExportFolder -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Host "Cleanup completed!" -ForegroundColor Green
     }
     catch {
-        Write-Host "`nError cloning VM: $_" -ForegroundColor Red
-        Write-Host "Make sure:" -ForegroundColor Yellow
-        Write-Host "  - The source VM exists" -ForegroundColor Yellow
-        Write-Host "  - You have enough disk space" -ForegroundColor Yellow
-        Write-Host "  - You're running as Administrator" -ForegroundColor Yellow
+        Write-Host "`n========================================" -ForegroundColor Red
+        Write-Host "ERROR CLONING VM" -ForegroundColor Red
+        Write-Host "========================================" -ForegroundColor Red
+        Write-Host "Error: $_" -ForegroundColor Red
+        Write-Host "`nTroubleshooting tips:" -ForegroundColor Yellow
+        Write-Host "  - Ensure you're running as Administrator" -ForegroundColor Yellow
+        Write-Host "  - Check that you have enough disk space on C:\" -ForegroundColor Yellow
+        Write-Host "  - Verify the source VM name is correct" -ForegroundColor Yellow
+        Write-Host "  - Make sure no antivirus is blocking the operation" -ForegroundColor Yellow
+        
+        # Clean up on failure
+        if (Test-Path $ExportFolder) {
+            Write-Host "`nCleaning up failed export..." -ForegroundColor Yellow
+            Remove-Item -Path $ExportFolder -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 
